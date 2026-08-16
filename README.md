@@ -23,10 +23,14 @@ static host works too.
 3. **Select** — the ✓ toggle on each thumbnail includes/excludes a page; use
    *Select all* / *None* per document. Reorder documents with ▲ / ▼ to control
    merge order.
-4. **Download**:
-   - **Merge Selected → 1 PDF** — every selected page, in order, as one file
-   - **Split → 1 file per page** — each selected page as its own PDF
-   - **Save Each Doc** — one edited PDF per source document
+4. **Merge in rounds** — *Merge Selected → Output* adds the selected pages
+   (crops applied) to the output tray. Load more PDFs, crop, and merge again as
+   many times as you like; the tray keeps everything, even if you clear the
+   source documents in between.
+5. **Download when done**:
+   - **Download / Share PDF** — builds one PDF from the whole output tray
+   - **Split → 1 file per page** — each selected page as its own PDF, immediately
+   - **Save Each Doc** — one edited PDF per source document, immediately
 
 ## Tech
 

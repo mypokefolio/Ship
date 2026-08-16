@@ -67,7 +67,7 @@ async function addFiles(files) {
       renderDoc(doc);
     } catch (err) {
       console.error(err);
-      alert(`Could not read "${file.name}" — is it a valid PDF?`);
+      toast(`Could not read "${file.name}" — is it a valid PDF?`);
     }
   }
   refreshUI();
@@ -316,7 +316,7 @@ function currentNormRect() {
 function applyCrop(scope) {
   const norm = currentNormRect();
   if (!norm) {
-    alert("Draw a crop box first — click and drag on the page.");
+    toast("Draw a crop box first — click and drag on the page.");
     return;
   }
   const targets =
@@ -327,6 +327,8 @@ function applyCrop(scope) {
   docs.forEach((d) => d.pages.forEach((p) => p.el && updateThumbState(p, p.el)));
   refreshUI();
   closeCrop();
+  targets.forEach((p) => p.el && flashThumb(p.el));
+  toast(`✓ Crop applied to ${targets.length} page${targets.length > 1 ? "s" : ""}`);
 }
 
 $("cropApplyPage").addEventListener("click", () => applyCrop("page"));
@@ -382,21 +384,26 @@ function cropToPdfBox(page) {
   };
 }
 
+// items: [{doc, pageIdx, box|null}] — box is a resolved PDF-space crop, captured
+// at the moment the page was queued, so later edits/removals can't change it.
 async function buildPdf(items) {
   const out = await PDFDocument.create();
   const libCache = new Map();
-  for (const { doc, page } of items) {
+  for (const { doc, pageIdx, box } of items) {
     if (!libCache.has(doc.id))
       libCache.set(doc.id, await PDFDocument.load(doc.bytes, { ignoreEncryption: true }));
-    const [copied] = await out.copyPages(libCache.get(doc.id), [page.n - 1]);
-    if (page.crop) {
-      const b = cropToPdfBox(page);
-      copied.setMediaBox(b.x, b.y, b.w, b.h);
-      copied.setCropBox(b.x, b.y, b.w, b.h);
+    const [copied] = await out.copyPages(libCache.get(doc.id), [pageIdx]);
+    if (box) {
+      copied.setMediaBox(box.x, box.y, box.w, box.h);
+      copied.setCropBox(box.x, box.y, box.w, box.h);
     }
     out.addPage(copied);
   }
   return out.save();
+}
+
+function toEntry({ doc, page }) {
+  return { doc, pageIdx: page.n - 1, box: page.crop ? cropToPdfBox(page) : null };
 }
 
 function download(bytes, name) {
@@ -420,7 +427,7 @@ async function withBusy(btn, fn) {
     await fn();
   } catch (err) {
     console.error(err);
-    alert("Something went wrong: " + err.message);
+    toast("Something went wrong: " + err.message);
   } finally {
     btn.disabled = false;
     btn.textContent = old;
@@ -428,13 +435,44 @@ async function withBusy(btn, fn) {
   }
 }
 
-$("btnMerge").addEventListener("click", (e) =>
+// ── Output tray ─────────────────────────────────────────────────────
+// "Merge Selected → Output" queues pages here; nothing downloads until the
+// user hits Download / Share. Queued entries keep their own bytes + crop box,
+// so you can clear docs, load new ones, and keep adding.
+let output = [];
+
+function updateOutputBar() {
+  $("outputBar").classList.toggle("hidden", output.length === 0);
+  $("outCount").textContent = `${output.length} page${output.length === 1 ? "" : "s"}`;
+}
+
+$("btnMerge").addEventListener("click", () => {
+  const items = selectedItems();
+  if (!items.length) return;
+  items.forEach((it) => output.push(toEntry(it)));
+  updateOutputBar();
+  pulse($("outputBar"));
+  flashButton($("btnMerge"), "✓ Added to output");
+  items.forEach(({ page }) => page.el && flashThumb(page.el));
+  toast(`✓ ${items.length} page${items.length > 1 ? "s" : ""} merged into output — ` +
+    `add more PDFs or hit Download / Share when you're done`);
+});
+
+$("btnDownload").addEventListener("click", (e) =>
   withBusy(e.target, async () => {
-    const items = selectedItems();
-    if (!items.length) return;
-    download(await buildPdf(items), `${outBase()}.pdf`);
+    if (!output.length) return;
+    const name = `${outBase()}.pdf`;
+    download(await buildPdf(output), name);
+    pulse($("outputBar"));
+    toast(`✓ Merge complete — ${output.length} page${output.length > 1 ? "s" : ""} in ${name}`);
   })
 );
+
+$("btnOutClear").addEventListener("click", () => {
+  output = [];
+  updateOutputBar();
+  toast("Output emptied.");
+});
 
 $("btnSplit").addEventListener("click", (e) =>
   withBusy(e.target, async () => {
@@ -442,7 +480,7 @@ $("btnSplit").addEventListener("click", (e) =>
     for (let i = 0; i < items.length; i++) {
       const { doc, page } = items[i];
       const base = doc.name.replace(/\.pdf$/i, "");
-      download(await buildPdf([items[i]]), `${base}-p${page.n}.pdf`);
+      download(await buildPdf([toEntry(items[i])]), `${base}-p${page.n}.pdf`);
       await new Promise((r) => setTimeout(r, 350)); // let the browser queue each download
     }
   })
@@ -453,8 +491,48 @@ $("btnPerDoc").addEventListener("click", (e) =>
     for (const doc of docs) {
       const items = doc.pages.filter((p) => p.selected).map((page) => ({ doc, page }));
       if (!items.length) continue;
-      download(await buildPdf(items), doc.name.replace(/\.pdf$/i, "") + "-edited.pdf");
+      download(await buildPdf(items.map(toEntry)), doc.name.replace(/\.pdf$/i, "") + "-edited.pdf");
       await new Promise((r) => setTimeout(r, 350));
     }
   })
 );
+
+// ── Completion feedback ─────────────────────────────────────────────
+function flashThumb(el) {
+  el.classList.remove("flash");
+  void el.offsetWidth; // restart the animation
+  el.classList.add("flash");
+  el.addEventListener("animationend", () => el.classList.remove("flash"), { once: true });
+}
+
+function pulse(el) {
+  el.classList.remove("pulse");
+  void el.offsetWidth;
+  el.classList.add("pulse");
+  el.addEventListener("animationend", () => el.classList.remove("pulse"), { once: true });
+}
+
+function flashButton(btn, label) {
+  if (btn.dataset.flashing) return;
+  const old = btn.textContent;
+  btn.dataset.flashing = "1";
+  btn.textContent = label;
+  setTimeout(() => {
+    btn.textContent = old;
+    delete btn.dataset.flashing;
+  }, 1200);
+}
+
+let toastTimer;
+function toast(msg, ms = 4200) {
+  let el = document.getElementById("toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "toast";
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), ms);
+}

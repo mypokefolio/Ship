@@ -27,17 +27,24 @@
 
   <!-- Toolbar -->
   <section id="toolbar" class="hidden">
-    <div class="tb-group">
-      <label for="outName">Output name</label>
-      <input type="text" id="outName" value="merged-labels" spellcheck="false">
-    </div>
     <div class="tb-group tb-actions">
-      <button id="btnMerge" class="btn btn-gold" title="Combine every selected page into one PDF">Merge Selected → 1 PDF</button>
+      <button id="btnMerge" class="btn btn-gold" title="Add every selected page (crops applied) to the output tray — you can keep adding more before downloading">Merge Selected → Output</button>
       <button id="btnSplit" class="btn" title="Download every selected page as its own PDF">Split → 1 file per page</button>
       <button id="btnPerDoc" class="btn" title="Download each document separately (selected pages, crops applied)">Save Each Doc</button>
       <button id="btnClear" class="btn btn-danger" title="Remove all loaded documents">Clear All</button>
     </div>
     <div id="status" class="tb-status"></div>
+  </section>
+
+  <!-- Output tray: pages merged so far, downloaded only when you say so -->
+  <section id="outputBar" class="hidden">
+    <div class="out-info"><span class="out-check">✓</span> Output ready: <strong id="outCount">0 pages</strong></div>
+    <div class="tb-group">
+      <label for="outName">Filename</label>
+      <input type="text" id="outName" value="merged-labels" spellcheck="false">
+    </div>
+    <button id="btnDownload" class="btn btn-gold" title="Build one PDF from everything in the output tray and download it">Download / Share PDF</button>
+    <button id="btnOutClear" class="btn btn-ghost" title="Empty the output tray and start over">Empty</button>
   </section>
 
   <!-- Loaded documents -->
