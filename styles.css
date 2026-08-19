@@ -194,15 +194,50 @@ main { flex: 1; width: 100%; max-width: 1180px; margin: 0 auto; padding: 18px 16
   background: var(--panel-2);
   flex-wrap: wrap;
 }
-.doc-name {
-  color: var(--gold-bright);
-  font-family: var(--display);
-  font-weight: 700;
-  font-size: 14px;
-  overflow-wrap: anywhere;
+.lab-title {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .18em;
+  color: var(--muted);
 }
-.doc-meta { color: var(--muted); font-family: var(--mono); font-size: 11px; }
 .doc-tools { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* document chips — one per loaded PDF, inside the single lab panel */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  padding: 5px 7px 5px 13px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color .15s, opacity .15s, box-shadow .15s;
+  user-select: none;
+}
+.chip:hover { border-color: var(--gold); box-shadow: 0 0 10px rgba(217, 181, 68, .12); }
+.chip.off { opacity: .4; }
+.chip .chip-name { color: var(--gold-bright); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip .chip-meta { color: var(--muted); }
+.chip.spliced { border-color: var(--gold); background: var(--gold-dim); }
+.chip-btn {
+  border: none;
+  background: var(--panel-2);
+  color: var(--muted);
+  width: 20px;
+  height: 20px;
+  border-radius: 99px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.chip-btn:hover { background: var(--line); color: var(--gold-bright); }
+.chip-btn.gold { background: var(--gold); color: #171204; }
+.chip-btn.gold:hover { background: var(--gold-bright); color: #171204; }
 
 /* spliced result: the single strand left after a merge */
 .doc-card.spliced {
@@ -267,6 +302,7 @@ main { flex: 1; width: 100%; max-width: 1180px; margin: 0 auto; padding: 18px 16
   line-height: 1.5;
 }
 .thumb-label .cropped-tag { color: var(--gold); }
+.thumb-label .src { color: var(--silver); opacity: .75; }
 .thumb-check {
   position: absolute;
   top: 3px; left: 3px;

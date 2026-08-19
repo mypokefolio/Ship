@@ -77,10 +77,10 @@ async function addBytesAsDoc(bytes, name, opts = {}) {
   const pdf = await pdfjsLib.getDocument({ data: bytes.slice().buffer }).promise;
   const doc = { id: ++docSeq, name, bytes, pdf, spliced: !!opts.spliced, pages: [] };
   for (let n = 1; n <= pdf.numPages; n++) {
-    doc.pages.push({ n, proxy: await pdf.getPage(n), selected: true, crop: null });
+    doc.pages.push({ doc, n, proxy: await pdf.getPage(n), selected: true, crop: null });
   }
   docs.push(doc);
-  renderDoc(doc);
+  renderLab();
   return doc;
 }
 
@@ -101,76 +101,119 @@ function refreshUI() {
   $("btnMerge").disabled = sel === 0;
   $("btnSplit").disabled = sel === 0;
   $("btnPerDoc").disabled = sel === 0;
+  // keep doc chips in sync with page-level selection
+  docsEl.querySelectorAll(".chip").forEach((chip) => {
+    const doc = docs.find((d) => String(d.id) === chip.dataset.docId);
+    if (doc) chip.classList.toggle("off", doc.pages.every((p) => !p.selected));
+  });
 }
 
 function setStatus(msg) {
   statusEl.textContent = msg;
 }
 
-function renderDoc(doc) {
+// One lab bench: every loaded document lives in a single panel. Documents
+// appear as chips in the header (click a chip to toggle its pages, tiny
+// controls reorder/remove); all pages flow together in one grid below.
+function renderLab() {
+  docsEl.innerHTML = ""; // page.el nodes are kept and re-appended, canvases intact
+  if (!docs.length) return;
+
+  const soloSplice = docs.length === 1 && docs[0].spliced;
   const card = document.createElement("section");
-  card.className = "doc-card" + (doc.spliced ? " spliced" : "");
-  card.dataset.docId = doc.id;
+  card.className = "doc-card lab" + (soloSplice ? " spliced" : "");
 
   const head = document.createElement("div");
   head.className = "doc-head";
-  head.innerHTML = `
-    ${doc.spliced ? '<span class="spliced-badge">&#10038; SPLICED STRAND</span>' : ""}
-    <span class="doc-name"></span>
-    <span class="doc-meta">${doc.pages.length} page${doc.pages.length > 1 ? "s" : ""}</span>
-    <div class="doc-tools">
-      ${doc.spliced ? '<button class="btn btn-sm btn-gold" data-act="download">Download PDF</button>' : ""}
-      <button class="btn btn-sm" data-act="up" title="Move up in splice order">&#9650;</button>
-      <button class="btn btn-sm" data-act="down" title="Move down in splice order">&#9660;</button>
-      <button class="btn btn-sm" data-act="all">Select all</button>
-      <button class="btn btn-sm" data-act="none">None</button>
-      <button class="btn btn-sm btn-danger" data-act="remove">Remove</button>
-    </div>`;
-  head.querySelector(".doc-name").textContent = doc.name;
-  head.addEventListener("click", (e) => {
-    const btn = e.target.closest("[data-act]");
-    const act = btn?.dataset.act;
-    if (!act) return;
-    if (act === "download") {
-      withBusy(btn, async () => {
-        download(doc.bytes, doc.name);
-        toast(`✓ ${doc.name} downloaded`);
-      });
-    } else if (act === "remove") removeDoc(doc);
-    else if (act === "up" || act === "down") moveDoc(doc, act === "up" ? -1 : 1);
-    else {
-      doc.pages.forEach((p) => (p.selected = act === "all"));
-      card.querySelectorAll(".page-thumb").forEach((el, i) => updateThumbState(doc.pages[i], el));
-      refreshUI();
-    }
+  const title = document.createElement("span");
+  title.className = "lab-title";
+  title.innerHTML = soloSplice ? '<span class="spliced-badge">&#10038; SPLICED STRAND</span>' : "LAB BENCH";
+  head.appendChild(title);
+
+  docs.forEach((doc) => {
+    const chip = document.createElement("span");
+    chip.className = "chip" + (doc.spliced ? " spliced" : "");
+    chip.dataset.docId = doc.id;
+    chip.title = `${doc.name} — click to include/exclude all its pages`;
+    chip.innerHTML = `
+      <span class="chip-name"></span><span class="chip-meta">${doc.pages.length}p</span>
+      ${doc.spliced ? '<button class="chip-btn gold" data-act="download" title="Download this strand">&#10515;</button>' : ""}
+      <button class="chip-btn" data-act="up" title="Earlier in splice order">&#8249;</button>
+      <button class="chip-btn" data-act="down" title="Later in splice order">&#8250;</button>
+      <button class="chip-btn" data-act="remove" title="Remove document">&#10005;</button>`;
+    chip.querySelector(".chip-name").textContent = doc.name.replace(/\.pdf$/i, "");
+    chip.classList.toggle("off", doc.pages.every((p) => !p.selected));
+    chip.addEventListener("click", (e) => {
+      const act = e.target.closest(".chip-btn")?.dataset.act;
+      if (act === "download") {
+        withBusy(e.target, async () => {
+          download(doc.bytes, doc.name);
+          toast(`✓ ${doc.name} downloaded`);
+        });
+      } else if (act === "remove") removeDoc(doc);
+      else if (act === "up" || act === "down") moveDoc(doc, act === "up" ? -1 : 1);
+      else {
+        const on = doc.pages.every((p) => !p.selected); // all off -> turn on, else off
+        doc.pages.forEach((p) => {
+          p.selected = on;
+          p.el && updateThumbState(p, p.el);
+        });
+        chip.classList.toggle("off", !on);
+        refreshUI();
+      }
+    });
+    head.appendChild(chip);
   });
+
+  if (soloSplice) {
+    const tools = document.createElement("div");
+    tools.className = "doc-tools";
+    const btn = document.createElement("button");
+    btn.className = "btn btn-sm btn-gold";
+    btn.dataset.act = "download";
+    btn.textContent = "Download PDF";
+    btn.addEventListener("click", () =>
+      withBusy(btn, async () => {
+        download(docs[0].bytes, docs[0].name);
+        toast(`✓ ${docs[0].name} downloaded`);
+      })
+    );
+    tools.appendChild(btn);
+    head.appendChild(tools);
+  }
   card.appendChild(head);
 
   const grid = document.createElement("div");
   grid.className = "page-grid";
+  docs.forEach((doc) =>
+    doc.pages.forEach((page) => {
+      if (!page.el) page.el = createThumb(doc, page);
+      grid.appendChild(page.el);
+      updateThumbState(page, page.el);
+    })
+  );
   card.appendChild(grid);
   docsEl.appendChild(card);
+}
 
-  doc.pages.forEach((page) => {
-    const thumb = document.createElement("div");
-    thumb.className = "page-thumb";
-    thumb.innerHTML = `
-      <div class="thumb-check on" title="Include page">✓</div>
-      <div class="thumb-wrap"><canvas></canvas></div>
-      <div class="thumb-label"></div>`;
-    grid.appendChild(thumb);
-    page.el = thumb;
+function createThumb(doc, page) {
+  const thumb = document.createElement("div");
+  page.el = thumb;
+  thumb.className = "page-thumb";
+  thumb.innerHTML = `
+    <div class="thumb-check on" title="Include page">✓</div>
+    <div class="thumb-wrap"><canvas></canvas></div>
+    <div class="thumb-label"></div>`;
 
-    thumb.querySelector(".thumb-check").addEventListener("click", () => {
-      page.selected = !page.selected;
-      updateThumbState(page, thumb);
-      refreshUI();
-    });
-    thumb.querySelector(".thumb-wrap").addEventListener("click", () => openCrop(doc, page));
-
-    drawThumb(page);
+  thumb.querySelector(".thumb-check").addEventListener("click", () => {
+    page.selected = !page.selected;
     updateThumbState(page, thumb);
+    refreshUI();
   });
+  thumb.querySelector(".thumb-wrap").addEventListener("click", () => openCrop(doc, page));
+
+  drawThumb(page);
+  return thumb;
 }
 
 // Render the page thumbnail. When a crop is set, the thumbnail shows the
@@ -204,20 +247,23 @@ function updateThumbState(page, thumb) {
   thumb.classList.toggle("deselected", !page.selected);
   thumb.querySelector(".thumb-check").classList.toggle("on", page.selected);
   const label = thumb.querySelector(".thumb-label");
+  let src = page.doc.name.replace(/\.pdf$/i, "");
+  if (src.length > 14) src = src.slice(0, 13) + "…";
   if (page.crop) {
     const vp1 = page.proxy.getViewport({ scale: 1 });
     const wIn = ((page.crop.w * vp1.width) / 72).toFixed(1);
     const hIn = ((page.crop.h * vp1.height) / 72).toFixed(1);
-    label.innerHTML = `p.${page.n} · <span class="cropped-tag">✂ ${wIn}×${hIn}″</span>`;
+    label.innerHTML = `<span class="src"></span> p.${page.n} · <span class="cropped-tag">✂ ${wIn}×${hIn}″</span>`;
   } else {
-    label.textContent = `p.${page.n}`;
+    label.innerHTML = `<span class="src"></span> p.${page.n}`;
   }
+  label.querySelector(".src").textContent = src;
   drawThumb(page);
 }
 
 function removeDoc(doc) {
   docs = docs.filter((d) => d !== doc);
-  docsEl.querySelector(`[data-doc-id="${doc.id}"]`)?.remove();
+  renderLab();
   refreshUI();
 }
 
@@ -226,10 +272,7 @@ function moveDoc(doc, delta) {
   const j = i + delta;
   if (j < 0 || j >= docs.length) return;
   [docs[i], docs[j]] = [docs[j], docs[i]];
-  const card = docsEl.querySelector(`[data-doc-id="${doc.id}"]`);
-  const other = docsEl.querySelector(`[data-doc-id="${docs[i].id}"]`);
-  if (delta < 0) docsEl.insertBefore(card, other);
-  else docsEl.insertBefore(other, card);
+  renderLab();
 }
 
 $("btnClear").addEventListener("click", () => {
