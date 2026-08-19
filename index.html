@@ -3,53 +3,65 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ship PDF Studio — Crop · Merge · Split</title>
+<title>Ship PDF Studio — Splice · Crop · Merge</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🏷️</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🧬</text></svg>">
 </head>
 <body>
 
 <header>
-  <h1>Ship <span class="accent">PDF Studio</span></h1>
-  <p class="tagline">Crop, combine &amp; split PDFs — labels and pick lists, done fast.</p>
+  <div class="brand-row">
+    <canvas id="helixMini" width="54" height="54" aria-hidden="true"></canvas>
+    <h1 class="brand">SHIP <em>PDF STUDIO</em></h1>
+  </div>
+  <p class="tagline">Load strands &middot; crop the sequence &middot; splice into one</p>
 </header>
 
 <main>
   <!-- Drop zone -->
   <section id="dropzone" tabindex="0" aria-label="Drop PDF files here or click to browse">
     <div class="dz-inner">
-      <div class="dz-icon">⇩</div>
-      <div class="dz-title">Drop PDFs here</div>
-      <div class="dz-sub">or click to browse — multiple files welcome</div>
+      <div class="dz-icon" aria-hidden="true">
+        <svg viewBox="0 0 40 40" width="40" height="40" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M20 6v20M20 26l-7-7M20 26l7-7"/><path d="M8 32h24"/>
+        </svg>
+      </div>
+      <div class="dz-title">Drop PDF strands here</div>
+      <div class="dz-sub">or click to browse &mdash; load as many as you need</div>
     </div>
     <input type="file" id="fileInput" accept="application/pdf,.pdf" multiple hidden>
   </section>
 
   <!-- Toolbar -->
   <section id="toolbar" class="hidden">
-    <div class="tb-group tb-actions">
-      <button id="btnMerge" class="btn btn-gold" title="Add every selected page (crops applied) to the output tray — you can keep adding more before downloading">Merge Selected → Output</button>
-      <button id="btnSplit" class="btn" title="Download every selected page as its own PDF">Split → 1 file per page</button>
-      <button id="btnPerDoc" class="btn" title="Download each document separately (selected pages, crops applied)">Save Each Doc</button>
-      <button id="btnClear" class="btn btn-danger" title="Remove all loaded documents">Clear All</button>
-    </div>
-    <div id="status" class="tb-status"></div>
-  </section>
-
-  <!-- Output tray: pages merged so far, downloaded only when you say so -->
-  <section id="outputBar" class="hidden">
-    <div class="out-info"><span class="out-check">✓</span> Output ready: <strong id="outCount">0 pages</strong></div>
     <div class="tb-group">
-      <label for="outName">Filename</label>
+      <label for="outName">Strand name</label>
       <input type="text" id="outName" value="merged-labels" spellcheck="false">
     </div>
-    <button id="btnDownload" class="btn btn-gold" title="Build one PDF from everything in the output tray and download it">Download / Share PDF</button>
-    <button id="btnOutClear" class="btn btn-ghost" title="Empty the output tray and start over">Empty</button>
+    <div class="tb-group tb-actions">
+      <button id="btnMerge" class="btn btn-gold" title="Splice every selected page (crops applied) into a single document">
+        <svg class="ic" viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 4c5 0 9 12 14 12M3 16C8 16 12 4 17 4"/></svg>
+        Splice &amp; Merge
+      </button>
+      <button id="btnSplit" class="btn" title="Download every selected page as its own PDF">Split pages</button>
+      <button id="btnPerDoc" class="btn" title="Download each document separately (selected pages, crops applied)">Save each doc</button>
+      <button id="btnClear" class="btn btn-danger" title="Remove all loaded documents">Clear lab</button>
+    </div>
+    <div id="status" class="tb-status"></div>
   </section>
 
   <!-- Loaded documents -->
   <section id="docs"></section>
 </main>
+
+<!-- Splice animation overlay -->
+<div id="spliceOverlay" class="hidden" aria-hidden="true">
+  <canvas id="spliceCanvas"></canvas>
+  <div id="spliceLabel">UNWINDING STRANDS</div>
+</div>
 
 <!-- Crop editor modal -->
 <div id="cropModal" class="modal hidden" role="dialog" aria-modal="true">
@@ -59,7 +71,7 @@
         <h2 id="cropTitle">Crop</h2>
         <div id="cropDims" class="crop-dims">Drag on the page to draw a crop box</div>
       </div>
-      <button id="cropClose" class="btn btn-ghost" title="Close (Esc)">✕</button>
+      <button id="cropClose" class="btn btn-ghost" title="Close (Esc)">&#10005;</button>
     </div>
     <div id="cropStage">
       <canvas id="cropCanvas"></canvas>
@@ -77,7 +89,7 @@
 </div>
 
 <footer>
-  Everything runs in your browser — your PDFs never leave your machine.
+  Everything runs in your browser &mdash; your PDFs never leave your machine.
 </footer>
 
 <script src="vendor/pdf.min.js"></script>

@@ -1,12 +1,16 @@
-/* Ship PDF Studio — crop, merge & split PDFs entirely in the browser. */
+/* Ship PDF Studio — splice lab: crop, merge & split PDFs in the browser. */
 "use strict";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = "vendor/pdf.worker.min.js";
 
 const { PDFDocument } = PDFLib;
 
+const GOLD = "#d9b544";
+const GOLD_BRIGHT = "#f4d878";
+const SILVER = "#c9d4e3";
+
 // ── State ───────────────────────────────────────────────────────────
-// docs: [{ id, name, bytes(Uint8Array), pdf(pdfjs doc),
+// docs: [{ id, name, bytes(Uint8Array), pdf(pdfjs doc), spliced,
 //          pages: [{ n, proxy, selected, crop:{x,y,w,h}|null }] }]
 // crop is normalized to the page's viewport (0..1, top-left origin) so the
 // same crop maps onto every page/document regardless of pixel size.
@@ -19,6 +23,9 @@ const fileInput = $("fileInput");
 const toolbar = $("toolbar");
 const docsEl = $("docs");
 const statusEl = $("status");
+
+const reducedMotion = () =>
+  window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // ── File intake ─────────────────────────────────────────────────────
 dropzone.addEventListener("click", () => fileInput.click());
@@ -57,20 +64,24 @@ async function addFiles(files) {
     setStatus(`Loading ${file.name}…`);
     try {
       const buf = await file.arrayBuffer();
-      const bytes = new Uint8Array(buf).slice(); // keep a copy for pdf-lib
-      const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-      const doc = { id: ++docSeq, name: file.name, bytes, pdf, pages: [] };
-      for (let n = 1; n <= pdf.numPages; n++) {
-        doc.pages.push({ n, proxy: await pdf.getPage(n), selected: true, crop: null });
-      }
-      docs.push(doc);
-      renderDoc(doc);
+      await addBytesAsDoc(new Uint8Array(buf).slice(), file.name);
     } catch (err) {
       console.error(err);
       toast(`Could not read "${file.name}" — is it a valid PDF?`);
     }
   }
   refreshUI();
+}
+
+async function addBytesAsDoc(bytes, name, opts = {}) {
+  const pdf = await pdfjsLib.getDocument({ data: bytes.slice().buffer }).promise;
+  const doc = { id: ++docSeq, name, bytes, pdf, spliced: !!opts.spliced, pages: [] };
+  for (let n = 1; n <= pdf.numPages; n++) {
+    doc.pages.push({ n, proxy: await pdf.getPage(n), selected: true, crop: null });
+  }
+  docs.push(doc);
+  renderDoc(doc);
+  return doc;
 }
 
 // ── Rendering ───────────────────────────────────────────────────────
@@ -83,7 +94,7 @@ function refreshUI() {
   const cropped = docs.reduce((s, d) => s + d.pages.filter((p) => p.crop).length, 0);
   setStatus(
     any
-      ? `${docs.length} doc${docs.length > 1 ? "s" : ""} · ${sel}/${total} pages selected` +
+      ? `${docs.length} strand${docs.length > 1 ? "s" : ""} · ${sel}/${total} pages` +
         (cropped ? ` · ${cropped} cropped` : "")
       : ""
   );
@@ -98,26 +109,34 @@ function setStatus(msg) {
 
 function renderDoc(doc) {
   const card = document.createElement("section");
-  card.className = "doc-card";
+  card.className = "doc-card" + (doc.spliced ? " spliced" : "");
   card.dataset.docId = doc.id;
 
   const head = document.createElement("div");
   head.className = "doc-head";
   head.innerHTML = `
+    ${doc.spliced ? '<span class="spliced-badge">&#10038; SPLICED STRAND</span>' : ""}
     <span class="doc-name"></span>
     <span class="doc-meta">${doc.pages.length} page${doc.pages.length > 1 ? "s" : ""}</span>
     <div class="doc-tools">
-      <button class="btn btn-sm" data-act="up" title="Move up in merge order">▲</button>
-      <button class="btn btn-sm" data-act="down" title="Move down in merge order">▼</button>
+      ${doc.spliced ? '<button class="btn btn-sm btn-gold" data-act="download">Download PDF</button>' : ""}
+      <button class="btn btn-sm" data-act="up" title="Move up in splice order">&#9650;</button>
+      <button class="btn btn-sm" data-act="down" title="Move down in splice order">&#9660;</button>
       <button class="btn btn-sm" data-act="all">Select all</button>
       <button class="btn btn-sm" data-act="none">None</button>
       <button class="btn btn-sm btn-danger" data-act="remove">Remove</button>
     </div>`;
   head.querySelector(".doc-name").textContent = doc.name;
   head.addEventListener("click", (e) => {
-    const act = e.target.dataset?.act;
+    const btn = e.target.closest("[data-act]");
+    const act = btn?.dataset.act;
     if (!act) return;
-    if (act === "remove") removeDoc(doc);
+    if (act === "download") {
+      withBusy(btn, async () => {
+        download(doc.bytes, doc.name);
+        toast(`✓ ${doc.name} downloaded`);
+      });
+    } else if (act === "remove") removeDoc(doc);
     else if (act === "up" || act === "down") moveDoc(doc, act === "up" ? -1 : 1);
     else {
       doc.pages.forEach((p) => (p.selected = act === "all"));
@@ -149,40 +168,51 @@ function renderDoc(doc) {
     });
     thumb.querySelector(".thumb-wrap").addEventListener("click", () => openCrop(doc, page));
 
-    drawThumb(page, thumb.querySelector("canvas"));
+    drawThumb(page);
     updateThumbState(page, thumb);
   });
 }
 
-async function drawThumb(page, canvas) {
+// Render the page thumbnail. When a crop is set, the thumbnail shows the
+// EDITED preview — only the cropped region, exactly what will be exported.
+async function drawThumb(page) {
+  const canvas = page.el.querySelector("canvas");
+  const cropKey = page.crop ? JSON.stringify(page.crop) : "";
+  if (page.renderedCrop === cropKey && canvas.width > 1) return;
+  page.renderedCrop = cropKey;
+
   const vp1 = page.proxy.getViewport({ scale: 1 });
-  const scale = 150 / vp1.width;
+  const c = page.crop || { x: 0, y: 0, w: 1, h: 1 };
+  // scale so the visible (cropped) region is ~200px wide
+  const scale = 200 / (vp1.width * c.w);
   const vp = page.proxy.getViewport({ scale });
-  canvas.width = Math.ceil(vp.width);
-  canvas.height = Math.ceil(vp.height);
-  await page.proxy.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+  const full = document.createElement("canvas");
+  full.width = Math.ceil(vp.width);
+  full.height = Math.ceil(vp.height);
+  await page.proxy.render({ canvasContext: full.getContext("2d"), viewport: vp }).promise;
+
+  const sx = Math.floor(c.x * full.width);
+  const sy = Math.floor(c.y * full.height);
+  const sw = Math.max(1, Math.floor(c.w * full.width));
+  const sh = Math.max(1, Math.floor(c.h * full.height));
+  canvas.width = sw;
+  canvas.height = sh;
+  canvas.getContext("2d").drawImage(full, sx, sy, sw, sh, 0, 0, sw, sh);
 }
 
 function updateThumbState(page, thumb) {
   thumb.classList.toggle("deselected", !page.selected);
   thumb.querySelector(".thumb-check").classList.toggle("on", page.selected);
   const label = thumb.querySelector(".thumb-label");
-  label.innerHTML = `p.${page.n}` + (page.crop ? ` · <span class="cropped-tag">cropped</span>` : "");
-  let box = thumb.querySelector(".thumb-crop");
   if (page.crop) {
-    if (!box) {
-      box = document.createElement("div");
-      box.className = "thumb-crop";
-      thumb.querySelector(".thumb-wrap").appendChild(box);
-    }
-    const c = page.crop;
-    box.style.left = c.x * 100 + "%";
-    box.style.top = c.y * 100 + "%";
-    box.style.width = c.w * 100 + "%";
-    box.style.height = c.h * 100 + "%";
-  } else if (box) {
-    box.remove();
+    const vp1 = page.proxy.getViewport({ scale: 1 });
+    const wIn = ((page.crop.w * vp1.width) / 72).toFixed(1);
+    const hIn = ((page.crop.h * vp1.height) / 72).toFixed(1);
+    label.innerHTML = `p.${page.n} · <span class="cropped-tag">✂ ${wIn}×${hIn}″</span>`;
+  } else {
+    label.textContent = `p.${page.n}`;
   }
+  drawThumb(page);
 }
 
 function removeDoc(doc) {
@@ -328,7 +358,7 @@ function applyCrop(scope) {
   refreshUI();
   closeCrop();
   targets.forEach((p) => p.el && flashThumb(p.el));
-  toast(`✓ Crop applied to ${targets.length} page${targets.length > 1 ? "s" : ""}`);
+  toast(`✓ Crop applied to ${targets.length} page${targets.length > 1 ? "s" : ""} — previews updated`);
 }
 
 $("cropApplyPage").addEventListener("click", () => applyCrop("page"));
@@ -384,8 +414,7 @@ function cropToPdfBox(page) {
   };
 }
 
-// items: [{doc, pageIdx, box|null}] — box is a resolved PDF-space crop, captured
-// at the moment the page was queued, so later edits/removals can't change it.
+// items: [{doc, pageIdx, box|null}] — box is a resolved PDF-space crop.
 async function buildPdf(items) {
   const out = await PDFDocument.create();
   const libCache = new Map();
@@ -435,44 +464,27 @@ async function withBusy(btn, fn) {
   }
 }
 
-// ── Output tray ─────────────────────────────────────────────────────
-// "Merge Selected → Output" queues pages here; nothing downloads until the
-// user hits Download / Share. Queued entries keep their own bytes + crop box,
-// so you can clear docs, load new ones, and keep adding.
-let output = [];
-
-function updateOutputBar() {
-  $("outputBar").classList.toggle("hidden", output.length === 0);
-  $("outCount").textContent = `${output.length} page${output.length === 1 ? "" : "s"}`;
-}
-
-$("btnMerge").addEventListener("click", () => {
-  const items = selectedItems();
-  if (!items.length) return;
-  items.forEach((it) => output.push(toEntry(it)));
-  updateOutputBar();
-  pulse($("outputBar"));
-  flashButton($("btnMerge"), "✓ Added to output");
-  items.forEach(({ page }) => page.el && flashThumb(page.el));
-  toast(`✓ ${items.length} page${items.length > 1 ? "s" : ""} merged into output — ` +
-    `add more PDFs or hit Download / Share when you're done`);
-});
-
-$("btnDownload").addEventListener("click", (e) =>
+// ── Splice & Merge: the DNA moment ──────────────────────────────────
+// Selected pages are spliced into ONE new strand that replaces every source
+// document. It stays in the lab as a single card — download it from there,
+// or load more PDFs and splice again.
+$("btnMerge").addEventListener("click", (e) =>
   withBusy(e.target, async () => {
-    if (!output.length) return;
+    const items = selectedItems();
+    if (!items.length) return;
+    const entries = items.map(toEntry);
     const name = `${outBase()}.pdf`;
-    download(await buildPdf(output), name);
-    pulse($("outputBar"));
-    toast(`✓ Merge complete — ${output.length} page${output.length > 1 ? "s" : ""} in ${name}`);
+    const animation = spliceAnimation(docs.length);
+    const bytes = await buildPdf(entries);
+    await animation;
+    docs = [];
+    docsEl.innerHTML = "";
+    const doc = await addBytesAsDoc(bytes, name, { spliced: true });
+    refreshUI();
+    toast(`✓ Splice complete — ${doc.pages.length} page${doc.pages.length > 1 ? "s" : ""} in one strand. ` +
+      `Download it, or load more PDFs and splice again.`);
   })
 );
-
-$("btnOutClear").addEventListener("click", () => {
-  output = [];
-  updateOutputBar();
-  toast("Output emptied.");
-});
 
 $("btnSplit").addEventListener("click", (e) =>
   withBusy(e.target, async () => {
@@ -497,30 +509,163 @@ $("btnPerDoc").addEventListener("click", (e) =>
   })
 );
 
+// ── DNA splice animation ────────────────────────────────────────────
+// Phase 1: one wavy strand per source document drifts toward the centre.
+// Phase 2: they wind into a double helix with base-pair rungs, spinning up.
+// Phase 3: the helix pinches into a single bright thread — the document.
+function spliceAnimation(strandCount) {
+  if (reducedMotion()) return Promise.resolve();
+  return new Promise((resolve) => {
+    const overlay = $("spliceOverlay");
+    const label = $("spliceLabel");
+    const cv = $("spliceCanvas");
+    const ctx = cv.getContext("2d");
+    cv.width = window.innerWidth;
+    cv.height = window.innerHeight;
+    const W = cv.width, H = cv.height, cy = H / 2;
+    const N = Math.max(2, Math.min(strandCount, 6));
+    const DUR = 3200;
+    overlay.classList.remove("hidden", "fading");
+    label.textContent = "UNWINDING STRANDS";
+
+    const ease = (t) => t * t * (3 - 2 * t);
+    const start = performance.now();
+
+    function strandPath(yBase, amp, wavelength, phase, color, alpha, lw) {
+      ctx.beginPath();
+      for (let x = -20; x <= W + 20; x += 6) {
+        const y = yBase + Math.sin(x / wavelength + phase) * amp;
+        x === -20 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = alpha;
+      ctx.lineWidth = lw;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 14;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
+    function frame(now) {
+      const t = Math.min((now - start) / DUR, 1);
+      ctx.clearRect(0, 0, W, H);
+      const spin = now / 240;
+
+      if (t < 0.42) {
+        // Phase 1 — separate strands converge on the centre line
+        const k = ease(t / 0.42);
+        for (let i = 0; i < N; i++) {
+          const y0 = ((i + 1) / (N + 1)) * H;
+          const y = y0 + (cy - y0) * k;
+          const color = i % 2 ? SILVER : GOLD;
+          strandPath(y, 16 + 6 * Math.sin(i * 2.1), 70 + i * 14, spin + i * 1.7, color, 0.5 + 0.5 * k, 2);
+        }
+      } else if (t < 0.8) {
+        // Phase 2 — double helix winds up at the centre
+        label.textContent = "SPLICING";
+        const k = ease((t - 0.42) / 0.38);
+        const amp = 44 * (1 - 0.15 * k);
+        const wl = 88;
+        const speed = spin * (1 + 2.2 * k);
+        // base-pair rungs
+        for (let x = 30; x < W - 10; x += 26) {
+          const p = x / wl + speed;
+          const y1 = cy + Math.sin(p) * amp;
+          const y2 = cy + Math.sin(p + Math.PI) * amp;
+          const depth = (Math.cos(p) + 1) / 2;
+          ctx.beginPath();
+          ctx.moveTo(x, y1);
+          ctx.lineTo(x, y2);
+          ctx.strokeStyle = GOLD;
+          ctx.globalAlpha = 0.12 + 0.3 * depth;
+          ctx.lineWidth = 1.4;
+          ctx.shadowBlur = 0;
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+        strandPath(cy, amp, wl, speed, GOLD, 0.95, 2.6);
+        strandPath(cy, amp, wl, speed + Math.PI, SILVER, 0.85, 2.6);
+      } else {
+        // Phase 3 — pinch into a single bright thread
+        label.textContent = "STRAND COMPLETE";
+        const k = ease((t - 0.8) / 0.2);
+        const amp = 37 * (1 - k);
+        const speed = spin * 3.2;
+        strandPath(cy, amp, 88, speed, GOLD, 1, 2.6 + 1.6 * k);
+        strandPath(cy, amp, 88, speed + Math.PI, k > 0.6 ? GOLD_BRIGHT : SILVER, 1, 2.6 + 1.6 * k);
+        if (k > 0.5) {
+          // flash of light as the thread fuses
+          ctx.globalAlpha = (k - 0.5) * 0.9;
+          const g = ctx.createLinearGradient(0, cy - 40, 0, cy + 40);
+          g.addColorStop(0, "rgba(244,216,120,0)");
+          g.addColorStop(0.5, "rgba(244,216,120,.55)");
+          g.addColorStop(1, "rgba(244,216,120,0)");
+          ctx.fillStyle = g;
+          ctx.fillRect(0, cy - 40, W, 80);
+          ctx.globalAlpha = 1;
+        }
+      }
+
+      if (t < 1) {
+        requestAnimationFrame(frame);
+      } else {
+        overlay.classList.add("fading");
+        setTimeout(() => {
+          overlay.classList.add("hidden");
+          resolve();
+        }, 460);
+      }
+    }
+    requestAnimationFrame(frame);
+  });
+}
+
+// ── Header helix — small ambient motif ──────────────────────────────
+(function helixMini() {
+  const cv = $("helixMini");
+  if (!cv) return;
+  const ctx = cv.getContext("2d");
+  const W = cv.width, H = cv.height, cx = W / 2;
+  function draw(phase) {
+    ctx.clearRect(0, 0, W, H);
+    for (let y = 4; y <= H - 4; y += 3) {
+      const p = y / 8 + phase;
+      const x1 = cx + Math.sin(p) * 14;
+      const x2 = cx + Math.sin(p + Math.PI) * 14;
+      const d1 = (Math.cos(p) + 1) / 2;
+      if (y % 9 < 3) {
+        ctx.strokeStyle = "rgba(217,181,68,.35)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x1, y);
+        ctx.lineTo(x2, y);
+        ctx.stroke();
+      }
+      ctx.fillStyle = GOLD;
+      ctx.globalAlpha = 0.4 + 0.6 * d1;
+      ctx.fillRect(x1 - 1.2, y - 1.2, 2.4, 2.4);
+      ctx.fillStyle = SILVER;
+      ctx.globalAlpha = 0.4 + 0.6 * (1 - d1);
+      ctx.fillRect(x2 - 1.2, y - 1.2, 2.4, 2.4);
+      ctx.globalAlpha = 1;
+    }
+  }
+  if (reducedMotion()) {
+    draw(0);
+  } else {
+    (function loop(now) {
+      draw(now / 900);
+      requestAnimationFrame(loop);
+    })(0);
+  }
+})();
+
 // ── Completion feedback ─────────────────────────────────────────────
 function flashThumb(el) {
   el.classList.remove("flash");
   void el.offsetWidth; // restart the animation
   el.classList.add("flash");
   el.addEventListener("animationend", () => el.classList.remove("flash"), { once: true });
-}
-
-function pulse(el) {
-  el.classList.remove("pulse");
-  void el.offsetWidth;
-  el.classList.add("pulse");
-  el.addEventListener("animationend", () => el.classList.remove("pulse"), { once: true });
-}
-
-function flashButton(btn, label) {
-  if (btn.dataset.flashing) return;
-  const old = btn.textContent;
-  btn.dataset.flashing = "1";
-  btn.textContent = label;
-  setTimeout(() => {
-    btn.textContent = old;
-    delete btn.dataset.flashing;
-  }, 1200);
 }
 
 let toastTimer;
